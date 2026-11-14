@@ -859,7 +859,11 @@ size_t CConnman::SocketSendData(CNode& node) const
             if (node.nSendOffset == data.size()) {
                 node.nSendOffset = 0;
                 node.nSendSize -= data.size();
-                node.fPauseSend = node.nSendSize > nSendBufferMaxSize;
+                const bool pause_send = node.nSendSize > nSendBufferMaxSize;
+                if (pause_send && !node.fPauseSend) {
+                    node.m_pause_send_since = GetTime<std::chrono::seconds>();
+                }
+                node.fPauseSend = pause_send;
                 it++;
             } else {
                 // could not send full message; stop sending more
@@ -1403,6 +1407,11 @@ bool CConnman::InactivityCheck(const CNode& node) const
         return true;
     }
 
+    if (node.fPauseSend && now > node.m_pause_send_since.load() + TIMEOUT_INTERVAL) {
+        LogPrint(BCLog::NET, "send buffer timeout peer=%d\n", node.GetId());
+        return true;
+    }
+
     if (!node.fSuccessfullyConnected) {
         LogPrint(BCLog::NET, "version handshake timeout peer=%d\n", node.GetId());
         return true;
@@ -1447,7 +1456,6 @@ bool CConnman::GenerateSelectSet(const std::vector<CNode*>& nodes,
             continue;
         }
 
-        error_set.insert(pnode->m_sock->Get());
         if (select_send) {
             send_set.insert(pnode->m_sock->Get());
             // Only stop receiving new messages, but keep processing incomplete ones
@@ -1456,6 +1464,7 @@ bool CConnman::GenerateSelectSet(const std::vector<CNode*>& nodes,
         }
         if (select_recv) {
             recv_set.insert(pnode->m_sock->Get());
+            error_set.insert(pnode->m_sock->Get());
         }
     }
 
@@ -3092,7 +3101,10 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
         pnode->mapSendBytesPerMsgCmd[msg.m_type] += nTotalSize;
         pnode->nSendSize += nTotalSize;
 
-        if (pnode->nSendSize > nSendBufferMaxSize) pnode->fPauseSend = true;
+        if (pnode->nSendSize > nSendBufferMaxSize && !pnode->fPauseSend) {
+            pnode->m_pause_send_since = GetTime<std::chrono::seconds>();
+            pnode->fPauseSend = true;
+        }
         pnode->vSendMsg.push_back(std::move(serializedHeader));
         if (nMessageSize) pnode->vSendMsg.push_back(std::move(msg.data));
 

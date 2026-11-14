@@ -7,6 +7,8 @@
 
 #include <primitives/block.h>
 
+#include <optional>
+
 
 class CTxMemPool;
 
@@ -135,7 +137,8 @@ public:
     // extra_txn is a list of extra transactions to look at, in <witness hash, reference> form
     ReadStatus InitData(const CBlockHeaderAndShortTxIDs& cmpctblock, const std::vector<std::pair<uint256, CTransactionRef>>& extra_txn);
     bool IsTxAvailable(size_t index) const;
-    ReadStatus FillBlock(CBlock& block, const std::vector<CTransactionRef>& vtx_missing, bool check_pow = true);
+    // Peer reconstruction supplies activation state; block-sketch RPCs may lack that context.
+    ReadStatus FillBlock(CBlock& block, const std::vector<CTransactionRef>& vtx_missing, bool check_pow = true, std::optional<bool> segwit_active = std::nullopt);
 };
 
 #endif // BITCOIN_BLOCKENCODINGS_H

@@ -6,6 +6,7 @@
 #ifndef BITCOIN_FLATFILE_H
 #define BITCOIN_FLATFILE_H
 
+#include <cstdint>
 #include <string>
 
 #include <fs.h>
@@ -14,13 +15,13 @@
 struct FlatFilePos
 {
     int nFile;
-    unsigned int nPos;
+    uint64_t nPos;
 
     SERIALIZE_METHODS(FlatFilePos, obj) { READWRITE(VARINT_MODE(obj.nFile, VarIntMode::NONNEGATIVE_SIGNED), VARINT(obj.nPos)); }
 
     FlatFilePos() : nFile(-1), nPos(0) {}
 
-    FlatFilePos(int nFileIn, unsigned int nPosIn) :
+    FlatFilePos(int nFileIn, uint64_t nPosIn) :
         nFile(nFileIn),
         nPos(nPosIn)
     {}

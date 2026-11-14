@@ -25,6 +25,7 @@
 #include <util/time.h>
 
 #include <any>
+#include <cstdio>
 #include <exception>
 #include <map>
 #include <optional>
@@ -66,9 +67,27 @@ bool FileCommit(FILE *file);
  */
 void DirectoryCommit(const fs::path &dirname);
 
-bool TruncateFile(FILE *file, unsigned int length);
+bool TruncateFile(FILE *file, uint64_t length);
+
+inline int FileSeek64(FILE* file, int64_t offset, int origin)
+{
+#if defined(WIN32)
+    return _fseeki64(file, offset, origin);
+#else
+    return std::fseek(file, offset, origin);
+#endif
+}
+
+inline int64_t FileTell64(FILE* file)
+{
+#if defined(WIN32)
+    return _ftelli64(file);
+#else
+    return std::ftell(file);
+#endif
+}
 int RaiseFileDescriptorLimit(int nMinFD);
-void AllocateFileRange(FILE *file, unsigned int offset, unsigned int length);
+void AllocateFileRange(FILE *file, uint64_t offset, unsigned int length);
 
 /**
  * Rename src to dest.

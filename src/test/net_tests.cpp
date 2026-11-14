@@ -15,6 +15,7 @@
 #include <span.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <test/util/net.h>
 #include <test/util/validation.h>
 #include <timedata.h>
 #include <util/strencodings.h>
@@ -31,9 +32,78 @@
 #include <optional>
 #include <string>
 
+struct CConnmanTest {
+    static bool Inactive(const CConnman& connman, const CNode& node) { return connman.InactivityCheck(node); }
+    static void Select(CConnman& connman, CNode& node, std::set<SOCKET>& recv, std::set<SOCKET>& send, std::set<SOCKET>& error)
+    {
+        connman.GenerateSelectSet({&node}, recv, send, error);
+    }
+    static void Drain(CConnman& connman, CNode& node)
+    {
+        LOCK(node.cs_vSend);
+        connman.SocketSendData(node);
+    }
+};
+
+class BackpressureSock : public StaticContentsSock {
+public:
+    BackpressureSock() : StaticContentsSock("") {}
+    bool drain{false};
+    ssize_t Send(const void*, size_t len, int) const override { return drain ? len : 0; }
+};
+
 using namespace std::literals;
 
 BOOST_FIXTURE_TEST_SUITE(net_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(paused_send_timeout)
+{
+    SetMockTime(100000);
+    auto sock = std::make_shared<BackpressureSock>();
+    CNode node{0, NODE_NETWORK, sock, CAddress{}, 0, 0, CAddress{}, "", ConnectionType::INBOUND, false};
+    node.fSuccessfullyConnected = true;
+    SetMockTime(100061);
+    m_node.connman->PushMessage(&node, CNetMsgMaker(PROTOCOL_VERSION).Make(NetMsgType::PING, uint64_t{1}));
+    BOOST_REQUIRE(node.fPauseSend);
+    const auto paused = node.m_pause_send_since.load();
+    BOOST_CHECK_EQUAL(paused.count(), 100061);
+
+    SetMockTime(100062);
+    m_node.connman->PushMessage(&node, CNetMsgMaker(PROTOCOL_VERSION).Make(NetMsgType::PING, uint64_t{2}));
+    BOOST_CHECK(node.m_pause_send_since.load() == paused);
+    SetMockTime(paused + TIMEOUT_INTERVAL);
+    node.m_last_send = node.m_last_recv = GetTime<std::chrono::seconds>();
+    BOOST_CHECK(!CConnmanTest::Inactive(*m_node.connman, node));
+    SetMockTime(paused + TIMEOUT_INTERVAL + 1s);
+    node.m_last_send = node.m_last_recv = GetTime<std::chrono::seconds>();
+    BOOST_CHECK(CConnmanTest::Inactive(*m_node.connman, node));
+
+    sock->drain = true;
+    CConnmanTest::Drain(*m_node.connman, node);
+    BOOST_CHECK(!node.fPauseSend);
+    BOOST_CHECK(!CConnmanTest::Inactive(*m_node.connman, node));
+    sock->drain = false;
+    m_node.connman->PushMessage(&node, CNetMsgMaker(PROTOCOL_VERSION).Make(NetMsgType::PING, uint64_t{3}));
+    BOOST_CHECK(node.m_pause_send_since.load() == GetTime<std::chrono::seconds>());
+    BOOST_CHECK(!CConnmanTest::Inactive(*m_node.connman, node));
+    SetMockTime(0s);
+}
+
+BOOST_AUTO_TEST_CASE(paused_receive_not_selected_for_exceptions)
+{
+    auto sock = std::make_shared<BackpressureSock>();
+    CNode node{0, NODE_NETWORK, sock, CAddress{}, 0, 0, CAddress{}, "", ConnectionType::INBOUND, false};
+    std::set<SOCKET> recv, send, error;
+    node.fPauseRecv = true;
+    CConnmanTest::Select(*m_node.connman, node, recv, send, error);
+    BOOST_CHECK(recv.empty());
+    BOOST_CHECK(error.empty());
+
+    node.fPauseRecv = false;
+    CConnmanTest::Select(*m_node.connman, node, recv, send, error);
+    BOOST_CHECK(recv.count(sock->Get()) == 1);
+    BOOST_CHECK(error.count(sock->Get()) == 1);
+}
 
 BOOST_AUTO_TEST_CASE(cnode_listen_port)
 {

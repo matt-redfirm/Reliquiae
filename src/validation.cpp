@@ -3843,6 +3843,61 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
     return true;
 }
 
+bool CheckBlockWitness(const CBlock& block, BlockValidationState& state, bool segwit_active)
+{
+    // Coinbase transaction can not have input witness data which is not covered
+    // (or committed to) by the witness or regular merkle tree
+    for (const auto& inwit : block.vtx[0]->witness.vtxinwit) {
+        if (!inwit.vchIssuanceAmountRangeproof.empty() ||
+                !inwit.vchInflationKeysRangeproof.empty() ||
+                !inwit.m_pegin_witness.IsNull()) {
+            return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-cb-witness", "Coinbase has invalid input witness data.");
+        }
+    }
+
+    // Validation for witness commitments.
+    // * We compute the witness hash (which is the hash including witnesses) of all the block's transactions, except the
+    //   coinbase (where 0x0000....0000 is used instead).
+    // * The coinbase scriptWitness is a stack of a single 32-byte vector, containing a witness reserved value (unconstrained).
+    // * We build a merkle tree with all those witness hashes as leaves (similar to the hashMerkleRoot in the block header).
+    // * There must be at least one output whose scriptPubKey is a single 36-byte push, the first 4 bytes of which are
+    //   {0xaa, 0x21, 0xa9, 0xed}, and the following 32 bytes are SHA256^2(witness root, witness reserved value). In case there are
+    //   multiple, the last one is used.
+    bool fHaveWitness = false;
+    if (segwit_active) {
+        int commitpos = GetWitnessCommitmentIndex(block);
+        if (commitpos != NO_WITNESS_COMMITMENT) {
+            bool malleated = false;
+            uint256 hashWitness = BlockWitnessMerkleRoot(block, &malleated);
+            // The malleation check is ignored; as the transaction tree itself
+            // already does not permit it, it is impossible to trigger in the
+            // witness tree.
+            if ((block.vtx[0]->witness.vtxinwit.empty()) ||
+                (block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack.size() != 1) ||
+                (block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack[0].size() != 32)) {
+                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-witness-nonce-size", strprintf("%s : invalid witness reserved value size", __func__));
+            }
+            CHash256().Write(hashWitness).Write(block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack[0]).Finalize(hashWitness);
+            uint256 committedWitness(std::vector<unsigned char>(&block.vtx[0]->vout[commitpos].scriptPubKey[6], &block.vtx[0]->vout[commitpos].scriptPubKey[6+32]));
+            if (memcmp(hashWitness.begin(), &block.vtx[0]->vout[commitpos].scriptPubKey[6], 32)) {
+                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-witness-merkle-match", strprintf("%s : witness merkle commitment mismatch", __func__));
+            }
+            fHaveWitness = true;
+        }
+    }
+
+    // No witness data is allowed in blocks that don't commit to witness data, as this would otherwise leave room for spam
+    if (!fHaveWitness) {
+      for (const auto& tx : block.vtx) {
+            if (tx->HasWitness()) {
+                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "unexpected-witness", strprintf("%s : unexpected witness data found", __func__));
+            }
+        }
+    }
+
+    return true;
+}
+
 /** NOTE: This function is not currently invoked by ConnectBlock(), so we
  *  should consider upgrade issues if we change which consensus rules are
  *  enforced in this function (eg by adding a new consensus rule). See comment
@@ -3881,54 +3936,8 @@ static bool ContextualCheckBlock(const CBlock& block, BlockValidationState& stat
         }
     }
 
-    // Coinbase transaction can not have input witness data which is not covered
-    // (or committed to) by the witness or regular merkle tree
-    for (const auto& inwit : block.vtx[0]->witness.vtxinwit) {
-        if (!inwit.vchIssuanceAmountRangeproof.empty() ||
-                !inwit.vchInflationKeysRangeproof.empty() ||
-                !inwit.m_pegin_witness.IsNull()) {
-            return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-cb-witness", "Coinbase has invalid input witness data.");
-        }
-    }
-
-    // Validation for witness commitments.
-    // * We compute the witness hash (which is the hash including witnesses) of all the block's transactions, except the
-    //   coinbase (where 0x0000....0000 is used instead).
-    // * The coinbase scriptWitness is a stack of a single 32-byte vector, containing a witness reserved value (unconstrained).
-    // * We build a merkle tree with all those witness hashes as leaves (similar to the hashMerkleRoot in the block header).
-    // * There must be at least one output whose scriptPubKey is a single 36-byte push, the first 4 bytes of which are
-    //   {0xaa, 0x21, 0xa9, 0xed}, and the following 32 bytes are SHA256^2(witness root, witness reserved value). In case there are
-    //   multiple, the last one is used.
-    bool fHaveWitness = false;
-    if (DeploymentActiveAfter(pindexPrev, consensusParams, Consensus::DEPLOYMENT_SEGWIT)) {
-        int commitpos = GetWitnessCommitmentIndex(block);
-        if (commitpos != NO_WITNESS_COMMITMENT) {
-            bool malleated = false;
-            uint256 hashWitness = BlockWitnessMerkleRoot(block, &malleated);
-            // The malleation check is ignored; as the transaction tree itself
-            // already does not permit it, it is impossible to trigger in the
-            // witness tree.
-            if ((block.vtx[0]->witness.vtxinwit.empty()) ||
-                (block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack.size() != 1) ||
-                (block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack[0].size() != 32)) {
-                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-witness-nonce-size", strprintf("%s : invalid witness reserved value size", __func__));
-            }
-            CHash256().Write(hashWitness).Write(block.vtx[0]->witness.vtxinwit[0].scriptWitness.stack[0]).Finalize(hashWitness);
-            uint256 committedWitness(std::vector<unsigned char>(&block.vtx[0]->vout[commitpos].scriptPubKey[6], &block.vtx[0]->vout[commitpos].scriptPubKey[6+32]));
-            if (memcmp(hashWitness.begin(), &block.vtx[0]->vout[commitpos].scriptPubKey[6], 32)) {
-                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "bad-witness-merkle-match", strprintf("%s : witness merkle commitment mismatch", __func__));
-            }
-            fHaveWitness = true;
-        }
-    }
-
-    // No witness data is allowed in blocks that don't commit to witness data, as this would otherwise leave room for spam
-    if (!fHaveWitness) {
-      for (const auto& tx : block.vtx) {
-            if (tx->HasWitness()) {
-                return state.Invalid(BlockValidationResult::BLOCK_MUTATED, "unexpected-witness", strprintf("%s : unexpected witness data found", __func__));
-            }
-        }
+    if (!CheckBlockWitness(block, state, DeploymentActiveAfter(pindexPrev, consensusParams, Consensus::DEPLOYMENT_SEGWIT))) {
+        return false;
     }
 
     // After the coinbase witness reserved value and commitment are verified,

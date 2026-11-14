@@ -3686,7 +3686,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 std::vector<CTransactionRef> dummy;
-                status = tempBlock.FillBlock(*pblock, dummy);
+                status = tempBlock.FillBlock(*pblock, dummy, /*check_pow=*/true, DeploymentActiveAt(*pindex, m_chainparams.GetConsensus(), Consensus::DEPLOYMENT_SEGWIT));
                 if (status == READ_STATUS_OK) {
                     fBlockReconstructed = true;
                 }
@@ -3783,7 +3783,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 return;
             }
 
-            ReadStatus status = partialBlock.FillBlock(*pblock, resp.txn);
+            const CBlockIndex* prev_block = m_chainman.m_blockman.LookupBlockIndex(partialBlock.header.hashPrevBlock);
+            assert(prev_block != nullptr);
+            ReadStatus status = partialBlock.FillBlock(*pblock, resp.txn, /*check_pow=*/true,
+                DeploymentActiveAfter(prev_block, m_chainparams.GetConsensus(), Consensus::DEPLOYMENT_SEGWIT));
             if (status == READ_STATUS_INVALID) {
                 RemoveBlockRequest(resp.blockhash, pfrom.GetId()); // Reset in-flight state in case Misbehaving does not result in a disconnect
                 Misbehaving(pfrom.GetId(), 100, "invalid compact block/non-matching block transactions");

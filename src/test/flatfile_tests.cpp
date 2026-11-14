@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <clientversion.h>
+#include <chain.h>
 #include <flatfile.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
@@ -10,7 +11,64 @@
 
 #include <boost/test/unit_test.hpp>
 
+#ifdef WIN32
+#include <io.h>
+#include <winioctl.h>
+#endif
+
 BOOST_FIXTURE_TEST_SUITE(flatfile_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(flatfile_64bit_positions)
+{
+    const uint64_t offset = (uint64_t{1} << 32) + 17;
+    CDataStream encoded(SER_DISK, CLIENT_VERSION);
+    encoded << FlatFilePos(1, offset);
+    FlatFilePos decoded;
+    encoded >> decoded;
+    BOOST_CHECK_EQUAL(decoded.nPos, offset);
+
+    int file = 1;
+    unsigned int old_offset = 123456;
+    CDataStream legacy(SER_DISK, CLIENT_VERSION), current(SER_DISK, CLIENT_VERSION);
+    legacy << VARINT_MODE(file, VarIntMode::NONNEGATIVE_SIGNED) << VARINT(old_offset);
+    current << FlatFilePos(file, old_offset);
+    BOOST_CHECK_EQUAL_COLLECTIONS(legacy.begin(), legacy.end(), current.begin(), current.end());
+
+    CBlockFileInfo info;
+    info.nSize = offset;
+    info.nUndoSize = offset + 1;
+    encoded << info;
+    CBlockFileInfo restored;
+    encoded >> restored;
+    BOOST_CHECK_EQUAL(restored.nSize, offset);
+    BOOST_CHECK_EQUAL(restored.nUndoSize, offset + 1);
+
+#ifndef WIN32
+    if (sizeof(long) < sizeof(uint64_t)) return;
+#endif
+    FlatFileSeq seq(m_args.GetDataDirBase(), "wide", 4096);
+    FILE* output = seq.Open(FlatFilePos(0, offset));
+    BOOST_REQUIRE(output != nullptr);
+#ifdef WIN32
+    DWORD bytes_returned;
+    const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(output)));
+    if (!DeviceIoControl(handle, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &bytes_returned, nullptr)) {
+        std::fclose(output);
+        BOOST_TEST_MESSAGE("Large-offset file test requires sparse-file support");
+        return;
+    }
+#endif
+    BOOST_CHECK_EQUAL(std::fputc('x', output), 'x');
+    BOOST_CHECK_EQUAL(FileTell64(output), static_cast<int64_t>(offset + 1));
+    BOOST_CHECK_EQUAL(std::fclose(output), 0);
+    BOOST_CHECK_EQUAL(fs::file_size(seq.FileName(FlatFilePos(0, 0))), offset + 1);
+    FILE* input = seq.Open(FlatFilePos(0, offset), true);
+    BOOST_REQUIRE(input != nullptr);
+    BOOST_CHECK_EQUAL(std::fgetc(input), 'x');
+    BOOST_CHECK_EQUAL(std::fclose(input), 0);
+    BOOST_CHECK(seq.Flush(FlatFilePos(0, offset), true));
+    BOOST_CHECK_EQUAL(fs::file_size(seq.FileName(FlatFilePos(0, 0))), offset);
+}
 
 BOOST_AUTO_TEST_CASE(flatfile_filename)
 {
