@@ -1,3 +1,16 @@
+# Reliquiae
+
+This development branch updates the repository to Elements 23.3.4 and includes
+additional security backports and build fixes. The upstream Elements history,
+licence and documentation are retained below.
+
+See [development and verification](doc/reliquiae-development.md) for the tested
+build, security changes and local regtest workflow. This branch does not define
+a production Reliquiae genesis, federation or Bitcoin withdrawal service. Use
+regtest for development; do not send real funds to a test network.
+
+---
+
 Elements Project blockchain platform
 ====================================
 
