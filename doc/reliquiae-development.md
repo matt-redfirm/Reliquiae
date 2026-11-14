@@ -24,6 +24,8 @@ Additional adaptations in this branch address:
 | CVE-2026-117349 | Track send-pause transitions and disconnect peers that remain paused beyond the timeout | [Bitcoin #36667](https://github.com/bitcoin/bitcoin/pull/36667) |
 | CVE-2026-117346 | Use 64-bit block/undo positions and sizes with matching seek, truncate and allocation handling | [Bitcoin #36669](https://github.com/bitcoin/bitcoin/pull/36669) |
 | CVE-2025-62859 | Reject witness-malleated compact-block reconstruction before completing the download request, preserving Elements-specific witness rules | [Bitcoin #32646](https://github.com/bitcoin/bitcoin/pull/32646) |
+| CVE-2024-52911 | Construct transaction data before the script-check controller so queued checks finish before referenced data is destroyed on early returns | [Bitcoin #31112](https://github.com/bitcoin/bitcoin/pull/31112) |
+| CVE-2024-52922 | Permit bounded parallel compact-block requests with per-peer cleanup and an outbound-reserved reconstruction slot | [Bitcoin #27626](https://github.com/bitcoin/bitcoin/pull/27626) |
 
 The inspected Tor-whitelist and variable-length Schnorr-message fixes are already
 present in the selected release. This change is a bounded maintenance update,
@@ -34,6 +36,13 @@ Old representable disk positions retain their existing variable-integer encoding
 After writing offsets that require more than 32 bits, downgrading to older code
 is not supported. Operating-system/filesystem limits, including 32-bit and FAT32
 limits, are not removed by widening the internal fields.
+
+Public proof-of-work operation has not been qualified by this maintenance work.
+The header-index memory advisory CVE-2019-25220 needs a mode-specific assessment;
+`trim_headers` does not establish an aggregate memory bound. Threshold-signed
+headers constrain unauthenticated forgery only when the signing policy actually
+requires independent signatures. An `OP_TRUE` test chain does not provide that
+protection and must remain isolated. See the [upstream advisory](https://bitcoincore.org/en/2024/09/18/disclose-headers-oom/).
 
 ## Build
 
@@ -68,17 +77,23 @@ fuzz targets. They do not disable those targets to bypass missing headers.
 The macOS ARM64 maintenance build passed:
 
 - Wallet-enabled daemon, CLI, transaction/wallet tools and fuzz executable build.
-- 35 focused security test cases with 449 assertions, including proof-cache,
-  send/receive backpressure, sparse files beyond 4 GiB and witness reconstruction.
+- 58 focused security, script-check queue and validation test cases with 34,075
+  assertions, including proof-cache, send/receive backpressure, sparse files
+  beyond 4 GiB and witness reconstruction.
 - Full `make check`.
 - Confidential transaction/wallet recovery, dynamic federation, three federated
-  peg variants and the complete compact-block functional script.
+  peg variants, block validation and the complete compact-block functional script.
+- The block-validation and compact-block runs explicitly used four script-check
+  threads; the compact-block regressions cover parallel completion, outbound-slot
+  reservation and survival of another peer's disconnection.
+- Supplemental RPC block fetching, high-bandwidth compact blocks, blocks-only
+  compact blocks and unrequested-block handling functional scripts.
 
 Repeat the checks against the current source:
 
 ```sh
 make check
-./src/test/test_bitcoin --run_test=sigcache_tests,net_tests,flatfile_tests,blockencodings_tests
+./src/test/test_bitcoin --run_test=sigcache_tests,net_tests,flatfile_tests,blockencodings_tests,checkqueue_tests,validation_block_tests,validation_chainstate_tests,validation_chainstatemanager_tests,validation_tests
 python3 test/functional/test_runner.py p2p_compactblocks.py \
   feature_confidential_transactions.py feature_dynafed.py feature_fedpeg.py
 ```
